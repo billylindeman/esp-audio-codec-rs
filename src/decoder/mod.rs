@@ -19,6 +19,8 @@ use crate::types::{AudioInfo, AudioType, Error};
 
 #[cfg(esp_idf_audio_decoder_aac_support)]
 pub mod aac;
+#[cfg(esp_idf_audio_decoder_sbc_support)]
+pub mod sbc;
 
 /// One-shot registration of the codecs that were enabled at Kconfig time.
 /// Holds the registration alive for the program's lifetime; dropping

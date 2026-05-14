@@ -1,0 +1,10 @@
+# Settings only used when `cargo` is invoked from inside this crate
+# (e.g. for `cargo check` during development). When the crate is consumed
+# as a dep from another project, that project's `.cargo/config.toml` wins.
+
+[target.'cfg(target_os = "espidf")']
+linker = "ldproxy"
+rustflags = ["--cfg", "espidf_time64"]
+
+[unstable]
+build-std = ["std", "panic_abort"]
