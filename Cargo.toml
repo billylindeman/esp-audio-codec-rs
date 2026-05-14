@@ -1,0 +1,31 @@
+[package]
+name = "esp-audio-codec"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+description = "Safe Rust bindings for Espressif's esp_audio_codec audio encoder/decoder component (esp-adf-libs)"
+repository = "https://github.com/billylindeman/esp-audio-codec"
+license = "Apache-2.0 OR MIT"
+links = "esp_audio_codec"
+
+[dependencies]
+esp-idf-sys = { version = "0.37", default-features = false }
+log = { version = "0.4", default-features = false }
+
+[build-dependencies]
+embuild = { version = "0.33", features = ["espidf"] }
+
+# Match the patch set that esp-idf-svc / esp-idf-hal master use, so a
+# downstream project consuming both this crate and esp-idf-svc resolves
+# coherently. (embuild 0.34 isn't on crates.io yet; the git master is
+# required for IDF >= 6.0.)
+[patch.crates-io]
+esp-idf-sys = { git = "https://github.com/esp-rs/esp-idf-sys", branch = "master" }
+esp-idf-hal = { git = "https://github.com/esp-rs/esp-idf-hal", branch = "master" }
+embuild = { git = "https://github.com/esp-rs/embuild", branch = "master" }
+
+# Pull in the espressif/esp_audio_codec managed component for every downstream
+# consumer of this crate; esp-idf-sys propagates this through embuild.
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "espressif/esp_audio_codec", version = "~2.5" }
+bindings_header = "bindings.h"
