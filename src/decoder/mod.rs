@@ -13,6 +13,8 @@ use esp_idf_sys::{
     esp_audio_dec_recovery_t_ESP_AUDIO_DEC_RECOVERY_NONE,
     esp_audio_dec_recovery_t_ESP_AUDIO_DEC_RECOVERY_PLC, esp_audio_dec_register_default,
     esp_audio_dec_reset, esp_audio_dec_unregister_default,
+    esp_audio_err_t_ESP_AUDIO_ERR_BUFF_NOT_ENOUGH, esp_audio_err_t_ESP_AUDIO_ERR_CONTINUE,
+    esp_audio_err_t_ESP_AUDIO_ERR_DATA_LACK, esp_audio_err_t_ESP_AUDIO_ERR_OK,
 };
 
 use crate::types::{AudioInfo, AudioType, Error};
@@ -65,16 +67,34 @@ impl FrameRecovery {
     }
 }
 
-/// Result of one [`Decoder::process`] call.
+/// Result of one [`Decoder::process`] call. Mirrors every status the
+/// underlying C `esp_audio_dec_process` can return and preserves the
+/// `consumed` / `needed` values the decoder writes regardless of status —
+/// crucial because all the non-OK statuses below are signals for how to
+/// drive the next call, not fatal errors.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub struct DecodeOutput {
-    /// Number of input bytes consumed by the decoder.
-    pub consumed: usize,
-    /// Number of PCM bytes written into the output buffer.
-    pub decoded: usize,
-    /// When `Err(Error::BuffNotEnough)` is returned from `process`, the
-    /// minimum output buffer size needed for the next attempt.
-    pub needed: usize,
+pub enum DecoderResult {
+    /// Decoder made progress: `consumed` input bytes were used and
+    /// `decoded` PCM bytes were written to the output buffer. Either
+    /// may be zero on a given call (e.g. decoder absorbed input but
+    /// didn't emit a frame yet, or emitted a frame from internal state
+    /// without consuming new input). Advance input by `consumed`,
+    /// write the PCM, call again.
+    Ok { consumed: usize, decoded: usize },
+    /// Decoder needs more input. `consumed` may still be > 0 (header
+    /// bytes were absorbed). Advance input by `consumed`, append more
+    /// bytes from the producer, call again.
+    DataLack { consumed: usize },
+    /// Output buffer too small for the next frame. Grow output to at
+    /// least `needed` bytes and retry with the *same* input — do NOT
+    /// advance by `consumed` here. Matches Espressif's `test_sbc.c`.
+    BuffNotEnough { consumed: usize, needed: usize },
+    /// Decoder asks to be called again with the same input. Advance by
+    /// `consumed`, call again.
+    Continue { consumed: usize },
+    /// Hard error from the codec. Decoder state may be poisoned;
+    /// consider [`Decoder::reset`] before continuing.
+    Failed(Error),
 }
 
 /// Safe wrapper around an `esp_audio_dec_handle_t`.
@@ -114,19 +134,16 @@ impl Decoder {
         Ok(Self { handle })
     }
 
-    /// Decode bytes from `input` into `output`, returning how many bytes
-    /// of each were consumed/produced.
-    ///
-    /// Callers typically call this in a loop, advancing the input slice
-    /// by `consumed` each iteration, until the input is exhausted. On
-    /// `Err(Error::BuffNotEnough)`, reallocate `output` to at least
-    /// `needed` bytes and retry the same input.
+    /// Decode bytes from `input` into `output`, returning a [`DecoderResult`]
+    /// that captures both the decoder's status and the `consumed` /
+    /// `needed` values it wrote. See the variants of [`DecoderResult`] for
+    /// the action each one demands from the caller.
     pub fn process(
         &mut self,
         input: &[u8],
         output: &mut [u8],
         recovery: FrameRecovery,
-    ) -> Result<DecodeOutput, Error> {
+    ) -> DecoderResult {
         let mut raw = esp_audio_dec_in_raw_t {
             buffer: input.as_ptr() as *mut u8,
             len: input.len() as u32,
@@ -140,13 +157,20 @@ impl Decoder {
             decoded_size: 0,
         };
         let result = unsafe { esp_audio_dec_process(self.handle, &mut raw, &mut frame) };
-        let out = DecodeOutput {
-            consumed: raw.consumed as usize,
-            decoded: frame.decoded_size as usize,
-            needed: frame.needed_size as usize,
-        };
-        Error::check(result)?;
-        Ok(out)
+        let consumed = raw.consumed as usize;
+        let decoded = frame.decoded_size as usize;
+        let needed = frame.needed_size as usize;
+        if result == esp_audio_err_t_ESP_AUDIO_ERR_OK {
+            DecoderResult::Ok { consumed, decoded }
+        } else if result == esp_audio_err_t_ESP_AUDIO_ERR_DATA_LACK {
+            DecoderResult::DataLack { consumed }
+        } else if result == esp_audio_err_t_ESP_AUDIO_ERR_BUFF_NOT_ENOUGH {
+            DecoderResult::BuffNotEnough { consumed, needed }
+        } else if result == esp_audio_err_t_ESP_AUDIO_ERR_CONTINUE {
+            DecoderResult::Continue { consumed }
+        } else {
+            DecoderResult::Failed(Error::from_raw(result))
+        }
     }
 
     /// Fetch stream metadata (sample rate, channels, bitrate, ...). Only

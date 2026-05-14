@@ -48,7 +48,7 @@ impl Error {
         }
     }
 
-    fn from_raw(code: esp_audio_err_t) -> Self {
+    pub(crate) fn from_raw(code: esp_audio_err_t) -> Self {
         match code {
             esp_audio_err_t_ESP_AUDIO_ERR_CONTINUE => Self::Continue,
             esp_audio_err_t_ESP_AUDIO_ERR_MEM_LACK => Self::MemLack,

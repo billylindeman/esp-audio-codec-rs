@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.77"
 description = "Safe Rust bindings for Espressif's esp_audio_codec audio encoder/decoder component (esp-adf-libs)"
-repository = "https://github.com/billylindeman/esp-audio-codec"
+repository = "https://github.com/billylindeman/esp-audio-codec-rs"
 license = "Apache-2.0 OR MIT"
 links = "esp_audio_codec"
 

@@ -31,9 +31,9 @@ In your app's `Cargo.toml`:
 
 ```toml
 [dependencies]
-esp-audio-codec = { git = "https://github.com/billylindeman/esp-audio-codec" }
+esp-audio-codec = { git = "https://github.com/billylindeman/esp-audio-codec-rs" }
 # or, while developing locally:
-# esp-audio-codec = { path = "../esp-audio-codec" }
+# esp-audio-codec = { path = "../esp-audio-codec-rs" }
 ```
 
 In your app's `sdkconfig.defaults` (or the layered fragment you point
