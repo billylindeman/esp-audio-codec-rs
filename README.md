@@ -60,11 +60,26 @@ codec whose registration is disabled).
 
 This design keeps a single source of truth: the C component's Kconfig.
 
+## The decode loop
+
+`Decoder::process` returns a `DecoderResult` enum, not a `Result`. Every
+variant carries the `consumed` bytes the decoder read and tells the
+caller what to do next — none of the non-`Ok` variants are fatal on
+their own:
+
+| Variant                           | Caller action                                                                |
+| --------------------------------- | ---------------------------------------------------------------------------- |
+| `Ok { consumed, decoded }`        | Emit `output[..decoded]`, advance input by `consumed`, call again.           |
+| `DataLack { consumed }`           | Advance input by `consumed`, append more bytes from the producer, call again. |
+| `BuffNotEnough { consumed, needed }` | Grow `output` to ≥ `needed` bytes, retry with the **same** input — do NOT advance. |
+| `Continue { consumed }`           | Advance by `consumed`, call again (decoder asked to be re-entered).          |
+| `Failed(Error)`                   | Hard codec error. Consider [`Decoder::reset`] before continuing.             |
+
 ## Example
 
 ```rust
 use esp_audio_codec::{
-    decoder::{aac::AacConfig, sbc::SbcConfig, DecodeOutput, Decoder, DefaultDecoders, FrameRecovery},
+    decoder::{aac::AacConfig, sbc::SbcConfig, Decoder, DecoderResult, DefaultDecoders, FrameRecovery},
     AudioInfo, Error,
 };
 
@@ -79,20 +94,32 @@ let mut aac = Decoder::aac(AacConfig::default())?;
 let mut sbc = Decoder::sbc(SbcConfig::default())?;
 
 // Loop over an input frame:
-let mut pcm = [0u8; 4096];
+let mut pcm = vec![0u8; 4096];
 let mut in_buf: &[u8] = encoded_aac_frame;
-while !in_buf.is_empty() {
+loop {
     match aac.process(in_buf, &mut pcm, FrameRecovery::Normal) {
-        Ok(DecodeOutput { consumed, decoded, .. }) => {
+        DecoderResult::Ok { consumed, decoded } => {
             i2s_write(&pcm[..decoded]);
             in_buf = &in_buf[consumed..];
+            if in_buf.is_empty() {
+                break;
+            }
         }
-        Err(Error::BuffNotEnough) => {
-            // realloc `pcm` to >= out.needed and retry
+        DecoderResult::DataLack { consumed } => {
+            in_buf = &in_buf[consumed..];
+            // wait for more bytes from the producer, then continue
             break;
         }
-        Err(e) => {
-            log::warn!("aac decode: {e:?}");
+        DecoderResult::BuffNotEnough { needed, .. } => {
+            pcm.resize(needed, 0);
+            // retry with the *same* in_buf — do NOT advance by consumed
+        }
+        DecoderResult::Continue { consumed } => {
+            in_buf = &in_buf[consumed..];
+        }
+        DecoderResult::Failed(e) => {
+            log::warn!("aac decode failed: {e:?}");
+            let _ = aac.reset();
             break;
         }
     }
