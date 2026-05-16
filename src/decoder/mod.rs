@@ -100,6 +100,9 @@ pub enum DecoderResult {
 /// Safe wrapper around an `esp_audio_dec_handle_t`.
 pub struct Decoder {
     handle: esp_audio_dec_handle_t,
+    /// Cached for the SBC consumed-bytes workaround in [`Decoder::process`].
+    /// See the comment there for details.
+    audio_type: AudioType,
 }
 
 impl Decoder {
@@ -131,7 +134,7 @@ impl Decoder {
         };
         let mut handle: esp_audio_dec_handle_t = ptr::null_mut();
         Error::check(esp_audio_dec_open(&mut config, &mut handle))?;
-        Ok(Self { handle })
+        Ok(Self { handle, audio_type })
     }
 
     /// Decode bytes from `input` into `output`, returning a [`DecoderResult`]
@@ -157,7 +160,25 @@ impl Decoder {
             decoded_size: 0,
         };
         let result = unsafe { esp_audio_dec_process(self.handle, &mut raw, &mut frame) };
-        let consumed = raw.consumed as usize;
+        // Upstream bug in `esp_sbc_dec_decode` (esp-adf-libs): its success
+        // path propagates OI's post-call `*frameBytes` (= REMAINING bytes)
+        // directly into `raw->consumed` without translating to the
+        // bytes-CONSUMED semantic the rest of the `esp_audio_dec` API
+        // (AAC, MP3, Opus, FLAC, …) honors. Confirmed via disassembly of
+        // `esp_sbc_dec.c.obj` cross-referenced with Android's
+        // `embdrv/sbc/decoder/srce/decoder-sbc.c:322-325`. The AAC wrapper
+        // does the equivalent translation; only SBC is off.
+        //
+        // We invert here at the FFI boundary so every consumer of this
+        // binding sees the documented `esp_audio_dec` contract regardless
+        // of codec. Remove this fixup once the upstream wrapper is fixed.
+        //
+        // Tracking: https://github.com/espressif/esp-adf-libs/issues/75
+        let consumed = if matches!(self.audio_type, AudioType::Sbc) {
+            (input.len() as u32).saturating_sub(raw.consumed) as usize
+        } else {
+            raw.consumed as usize
+        };
         let decoded = frame.decoded_size as usize;
         let needed = frame.needed_size as usize;
         if result == esp_audio_err_t_ESP_AUDIO_ERR_OK {
